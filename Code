@@ -1,0 +1,300 @@
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// I2C LCD Address
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
+
+#define SS_PIN 10
+#define RST_PIN 9
+
+MFRC522 mfrc522(SS_PIN, RST_PIN);
+
+// Motor Driver IN Pins & Speed Pins (ENA, ENB)
+const int enA = 5;
+const int in1 = 4;
+const int in2 = 3;
+const int in3 = 2;
+const int in4 = 7;
+const int enB = 6;
+
+// Ultrasonic Sensor Pins
+const int trigPin = 8;
+const int echoPin = A0;
+
+// Alcohol Sensor Pin
+const int alcoholPin = A1;
+const int alcoholThreshold = 400; 
+
+// RFID கார்டுகள் (UID)
+byte licenseUID[] = {0x6D, 0x6F, 0xE7, 0x6B};    // 1st Card: Driver License
+byte schoolZoneUID[] = {0xA1, 0x72, 0x2B};       // 2nd Card: School Zone (Slow Speed)[span_0](start_span)[span_0](end_span)
+
+bool alcoholPassed = false;
+bool isUnlocked = false; 
+int carSpeed = 200; // நார்மல் ஸ்பீட் (0 - 255)
+char currentCommand = 'S'; // தற்போதைய கமாண்ட் (Start with Stop)
+
+void setup() {
+  Serial.begin(9600); 
+  SPI.begin();
+  mfrc522.PCD_Init();
+
+  // LCD Initialize
+  lcd.init();                      
+  lcd.backlight();
+
+  // Motor pins setup
+  pinMode(enA, OUTPUT);
+  pinMode(enB, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+
+  // Ultrasonic & Alcohol pins setup
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(alcoholPin, INPUT);
+
+  stopCar();
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("  SMART VEHICLE ");
+  lcd.setCursor(0, 1);
+  lcd.print("Checking Alcohol");
+  delay(2000);
+}
+
+void loop() {
+  // ----------------------------------------------------
+  // STEP 1: Alcohol Test
+  // ----------------------------------------------------
+  if (!alcoholPassed) {
+    int alcoholVal = analogRead(alcoholPin);
+    Serial.print("Alcohol Value: ");
+    Serial.println(alcoholVal);
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Alcohol Test...");
+    lcd.setCursor(0, 1);
+    lcd.print("Val: ");
+    lcd.print(alcoholVal);
+    delay(1500);
+
+    if (alcoholVal > alcoholThreshold) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("ALCOHOL DETECTED");
+      lcd.setCursor(0, 1);
+      lcd.print("Engine Locked!  ");
+      stopCar();
+      delay(3000);
+    } else {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Alcohol Safe :) ");
+      lcd.setCursor(0, 1);
+      lcd.print("Scan License RFID");
+      alcoholPassed = true; 
+      delay(2000);
+    }
+    return;
+  }
+
+  // ----------------------------------------------------
+  // STEP 2: RFID License Verification
+  // ----------------------------------------------------
+  if (!isUnlocked) {
+    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      bool isLicenseValid = true;
+      for (byte i = 0; i < mfrc522.uid.size; i++) {
+        if (mfrc522.uid.uidByte[i] != licenseUID[i]) {
+          isLicenseValid = false;
+        }
+      }
+      
+      lcd.clear();
+      if (isLicenseValid) {
+        isUnlocked = true;
+        lcd.setCursor(0, 0);
+        lcd.print(" Access Granted ");
+        lcd.setCursor(0, 1);
+        lcd.print(" Engine Started ");
+        delay(2000);
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Ready via BT    ");
+      } else {
+        lcd.setCursor(0, 0);
+        lcd.print(" Access Denied  ");
+        lcd.setCursor(0, 1);
+        lcd.print("   Wrong Card   ");
+        delay(2000);
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Scan License RFID");
+      }
+      mfrc522.PICC_HaltA();
+      mfrc522.PCD_StopCrypto1();
+    }
+    return; 
+  }
+
+  // ----------------------------------------------------
+  // STEP 3: Read Bluetooth Command (Non-blocking check)
+  // ----------------------------------------------------
+  if (Serial.available() > 0) {
+    char incomingChar = Serial.read();
+    if (incomingChar == 'F' || incomingChar == 'B' || incomingChar == 'L' || incomingChar == 'R' || incomingChar == 'S' || incomingChar == 'N') {
+      currentCommand = incomingChar;
+    }
+  }
+
+  // ----------------------------------------------------
+  // STEP 4: Dynamic RFID Scan (School Zone Check during driving)
+  // ----------------------------------------------------
+  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+    bool isSchoolZone = true;
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      if (mfrc522.uid.uidByte[i] != schoolZoneUID[i]) {
+        isSchoolZone = false;
+      }
+    }
+
+    if (isSchoolZone) {
+      carSpeed = 90; // ஸ்கூல் ஜோன் வந்ததால் ஸ்பீடை பாதியாகக் குறைக்கிறோம் (Slow Speed - PWM value around 90-100)
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(" SCHOOL ZONE!   ");
+      lcd.setCursor(0, 1);
+      lcd.print(" Speed: Low     ");
+      delay(1500);
+    }
+    mfrc522.PICC_HaltA();
+    mfrc522.PCD_StopCrypto1();
+  }
+
+  // ----------------------------------------------------
+  // STEP 5: Continuous Ultrasonic & Motor Execution
+  // ----------------------------------------------------
+  int distance = getDistance();
+  bool obstacleAhead = (distance > 0 && distance < 15); // 15 செ.மீ தூரத்திற்குள் தடை
+
+  // LCD-ல் தூரமும் ஸ்பீடும் தெரியப்படுத்த
+  lcd.setCursor(0, 1);
+  lcd.print("Dst:");
+  lcd.print(distance);
+  lcd.print("cm Spd:");
+  lcd.print(carSpeed);
+  lcd.print("   "); // பழைய எழுத்துக்களை மறைக்க ஸ்பேஸ்
+
+  // கமாண்ட் மற்றும் தடையை சரிபார்த்து மோட்டார்களை இயக்குதல்
+  switch (currentCommand) {
+    case 'F': // Forward
+      if (obstacleAhead) {
+        lcd.setCursor(0, 0);
+        lcd.print("Obstacle! Stop  ");
+        stopCar();
+      } else {
+        lcd.setCursor(0, 0);
+        lcd.print("Moving Forward  ");
+        moveForward(carSpeed);
+      }
+      break;
+
+    case 'B': // Backward (தடை இருந்தாலும் பின்னால் போகலாம்)
+      lcd.setCursor(0, 0);
+      lcd.print("Moving Backward ");
+      moveBackward(carSpeed);
+      break;
+
+    case 'L': // Left
+      lcd.setCursor(0, 0);
+      lcd.print("Turning Left    ");
+      turnLeft(carSpeed);
+      break;
+
+    case 'R': // Right
+      lcd.setCursor(0, 0);
+      lcd.print("Turning Right   ");
+      turnRight(carSpeed);
+      break;
+
+    case 'S': // Stop
+      lcd.setCursor(0, 0);
+      lcd.print("Car Stopped     ");
+      stopCar();
+      break;
+      
+    case 'N': // Normal Speed Reset
+      carSpeed = 200;
+      currentCommand = 'S';
+      break;
+  }
+
+  delay(50); // சின்ன டிலே லூப் ஸ்மூத்தாக வேலை செய்ய
+}
+
+// தூரத்தை அளவிடும் ஃபங்ஷன்
+int getDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  long duration = pulseIn(echoPin, HIGH, 30000); // 30ms timeout for safety
+  if (duration == 0) return 100; // எந்த தடையும் இல்லை என்றால் தூரமாக காட்ட
+  int distance = duration * 0.034 / 2;
+  return distance;
+}
+
+// மோட்டார் மூவ்மெண்ட் வித் ஸ்பீட் கண்ட்ரோல் (PWM)
+void moveForward(int spd) {
+  analogWrite(enA, spd);
+  analogWrite(enB, spd);
+  digitalWrite(in1, HIGH);
+  digitalWrite(in2, LOW);
+  digitalWrite(in3, HIGH);
+  digitalWrite(in4, LOW);
+}
+
+void moveBackward(int spd) {
+  analogWrite(enA, spd);
+  analogWrite(enB, spd);
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, HIGH);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, HIGH);
+}
+
+void turnLeft(int spd) {
+  analogWrite(enA, spd);
+  analogWrite(enB, spd);
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, HIGH);
+  digitalWrite(in3, HIGH);
+  digitalWrite(in4, LOW);
+}
+
+void turnRight(int spd) {
+  analogWrite(enA, spd);
+  analogWrite(enB, spd);
+  digitalWrite(in1, HIGH);
+  digitalWrite(in2, LOW);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, HIGH);
+}
+
+void stopCar() {
+  analogWrite(enA, 0);
+  analogWrite(enB, 0);
+  digitalWrite(in1, LOW);
+  digitalWrite(in2, LOW);
+  digitalWrite(in3, LOW);
+  digitalWrite(in4, LOW);
+}
