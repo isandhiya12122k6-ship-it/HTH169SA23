@@ -1,0 +1,19 @@
+Hardware Components:
+Arduino Nano/Uno
+ESP32-CAM
+RFID module
+Alcohol sensor
+Ultrasonic sensor
+Accelerometer/gyroscope
+GPS module
+GSM module
+Motor driver
+DC motors
+Buzzer
+LCD
+
+Software:
+Arduino IDE
+Arduino C 
+OpenCV
+Computer Vision
