@@ -1,0 +1,5 @@
+problem statement:
+Automatically assign and schedule tasks based on employee workload, 
+availability, and priority, and when a deadline is at risk of being missed, 
+automatically propose (not silently execute) a reassignment that respects 
+skill-fit and current workload of alternates. 
